@@ -10,10 +10,14 @@ ENV/
 env.bak/
 venv.bak/
 
-# Environment variables
+# Environment
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
 
 # IDE
 .vscode/
@@ -22,10 +26,6 @@ venv.bak/
 *.swo
 *~
 
-# Logs
-*.log
-logs/
-
-# Local files
-fly.local.toml
+# OS
 .DS_Store
+Thumbs.db
