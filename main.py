@@ -1,11 +1,12 @@
 import os
 import logging
 import asyncio
-from telegram import Update
+from flask import Flask, request
+import threading
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
 import base64
-from io import BytesIO
 
 # Logging sozlamalari
 logging.basicConfig(
@@ -14,10 +15,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables (Render.com dashboardda o'rnatiladi)
+# Environment variables
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 PORT = int(os.environ.get('PORT', 10000))
+
+# Flask app (Render.com web service uchun)
+app = Flask(__name__)
 
 # DeepSeek client
 client = AsyncOpenAI(
@@ -31,47 +35,43 @@ SYSTEM_PROMPT = """Siz foydali va do'stona yordamchisiz. O'zbek tilida javob ber
 # Foydalanuvchi suhbatlari
 user_sessions = {}
 
+# Bot application (global)
+telegram_app = None
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start komandasi"""
-    welcome_text = """
-🚀 **DeepSeek AI Bot ishga tushdi!**
-
-Men **Render.com** da host qilinganman!
-
-**Buyruqlar:**
-/help - Yordam
-/clear - Tarixni tozalash
-/about - Bot haqida
-
-Savollaringizni yozing!
-    """
+    welcome_text = (
+        "🚀 **DeepSeek AI Bot ishga tushdi!**\n\n"
+        "Men **Render.com** da host qilinganman!\n\n"
+        "**Buyruqlar:**\n"
+        "/help - Yordam\n"
+        "/clear - Tarixni tozalash\n"
+        "/about - Bot haqida\n\n"
+        "Savollaringizni yozing!"
+    )
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Yordam komandasi"""
-    help_text = """
-📚 **Yordam**
-
-• Oddiy matn yozing - suhbatlashamiz
-• /clear - Suhbat tarixini tozalaydi
-• /about - Bot haqida ma'lumot
-
-**Maslahat:** Aniq savollar bering!
-    """
+    help_text = (
+        "📚 **Yordam**\n\n"
+        "• Oddiy matn yozing - suhbatlashamiz\n"
+        "• /clear - Suhbat tarixini tozalaydi\n"
+        "• /about - Bot haqida ma'lumot\n\n"
+        "**Maslahat:** Aniq savollar bering!"
+    )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bot haqida"""
-    about_text = """
-🤖 **Bot haqida**
-
-• **Platforma:** Render.com
-• **API:** DeepSeek (bepul)
-• **Model:** deepseek-chat
-• **Yaratilgan:** 2024
-
-@username tomonidan yaratilgan
-    """
+    about_text = (
+        "🤖 **Bot haqida**\n\n"
+        "• **Platforma:** Render.com\n"
+        "• **API:** DeepSeek (bepul)\n"
+        "• **Model:** deepseek-chat\n"
+        "• **Yaratilgan:** 2025\n\n"
+        "@username tomonidan yaratilgan"
+    )
     await update.message.reply_text(about_text, parse_mode='Markdown')
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,8 +138,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring."
         )
 
-async def health_check(request):
-    """Render.com uchun health check"""
+def run_bot():
+    """Botni alohida threadda ishga tushirish"""
+    global telegram_app
+    
+    try:
+        # Bot yaratish
+        telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Handlerlar
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("help", help_command))
+        telegram_app.add_handler(CommandHandler("about", about_command))
+        telegram_app.add_handler(CommandHandler("clear", clear_command))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        logger.info("✅ Bot ishga tushmoqda...")
+        
+        # Polling bilan ishga tushirish (webhook o'rniga)
+        telegram_app.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error(f"Bot ishga tushmadi: {e}")
+
+@app.route('/')
+def home():
+    """Home page"""
+    return "🤖 DeepSeek AI Bot ishlayapti!"
+
+@app.route('/health')
+def health():
+    """Health check"""
+    return "OK", 200
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint (ixtiyoriy)"""
+    if telegram_app:
+        # Webhook logikasi
+        pass
     return "OK", 200
 
 def main():
@@ -155,28 +192,17 @@ def main():
         return
     
     try:
-        # Bot yaratish
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        # Botni alohida threadda ishga tushirish
+        bot_thread = threading.Thread(target=run_bot, daemon=True)
+        bot_thread.start()
         
-        # Handlerlar
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("about", about_command))
-        app.add_handler(CommandHandler("clear", clear_command))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        logger.info(f"🌐 Flask server ishga tushdi: Port {PORT}")
         
-        logger.info(f"✅ Bot ishga tushdi! Port: {PORT}")
-        
-        # Webhook bilan ishga tushirish (Render.com uchun)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=TELEGRAM_TOKEN,
-            webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/{TELEGRAM_TOKEN}"
-        )
+        # Flask serverini ishga tushirish (Render.com uchun)
+        app.run(host='0.0.0.0', port=PORT)
         
     except Exception as e:
-        logger.error(f"Bot ishga tushmadi: {e}")
+        logger.error(f"Xatolik: {e}")
 
 if __name__ == "__main__":
     main()
